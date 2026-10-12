@@ -10,6 +10,26 @@
     {% endif %}
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.5.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.8.1/dist/nouislider.min.css">
+    <style>
+        #timelineWrap { position: relative; padding: 2.5rem 0 1rem; }
+        #selectionTimeline { margin: 0 12px; }
+        #speedMarkers { position: absolute; inset: 2.5rem 12px auto 12px; height: 18px; pointer-events: none; z-index: 5; }
+        #playheadTrack { position: absolute; inset: 2.5rem 12px auto 12px; height: 36px; pointer-events: none; z-index: 4; }
+        #playheadMarker { position: absolute; top: -9px; left: 0; width: 2px; height: 36px; background: #dc3545; transform: translateX(-50%); box-shadow: 0 0 4px rgba(220, 53, 69, .8); }
+        #playheadMarker::before { content: ""; position: absolute; top: -5px; left: -4px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #dc3545; }
+        .speed-marker { position: absolute; top: -18px; transform: translateX(-50%); pointer-events: auto; cursor: grab; border: 0; background: transparent; color: #ffc107; font-size: .75rem; padding: 0; white-space: nowrap; }
+        .speed-marker::after { content: ""; display: block; width: 3px; height: 30px; margin: 1px auto 0; background: #ffc107; border-radius: 2px; }
+        .speed-marker.active { color: #fff3cd; }
+        .speed-marker.active::after { background: #fff3cd; }
+        #speedEditor { position: absolute; z-index: 10; width: 240px; transform: translateX(-50%); top: 4.5rem; }
+        .noUi-connect { background: #0d6efd; }
+        .noUi-tooltip { font-size: .75rem; }
+        .noUi-horizontal { height: 6px; }
+        .noUi-horizontal .noUi-handle { width: 7px; height: 30px; right: -3px; top: -13px; border: 0; border-radius: 2px; background: #0d6efd; box-shadow: none; cursor: ew-resize; }
+        .noUi-handle::before, .noUi-handle::after { display: none; }
+        .timeline-controls { white-space: nowrap; }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -47,31 +67,41 @@
             <p class="text-muted"><em>Drag the video playhead, and use the buttons below to set the Start and End times.</em></p> 
         </div>
         <form id="encodeForm" action="/encode" method="post">
-            <div class="row mb-3">
-                <div class="col">
-                    <button type="button" class="btn btn-outline-primary" onclick="setTime('start')"><span class="bi-skip-start-fill"></span> Set Start Time</button>
-                </div>
-                <div class="col">
-                    <button type="button" class="btn btn-outline-primary" onclick="setTime('end')">Set End Time <span class="bi-skip-end-fill"></span></button>
-                </div>
-            </div>
-            <div class="row mb-3">
-                <div class="col">
-                    <label for="startTime" class="form-label padding-top">Start Time:</label>
-                    <input class="form-range" type="range" name="startTime" id="startTime" min="0" step="0.001" max="{{ twopass.duration }}" value="{{ twopass.from_seconds if twopass.from_seconds else 0 }}">
-                    <span id="startTimeLabel">{{ twopass.from_seconds|string + " seconds" if twopass.from_seconds else "0 seconds" }}</span>
-                </div>
-                <div class="col">
-                    <label for="endTime" class="form-label">End Time:</label>
-                    <input class="form-range" type="range" name="endTime" id="endTime" min="0" step="0.001" max="{{ twopass.duration }}" value="{{ twopass.to_seconds if twopass.to_seconds else twopass.duration }}">
-                    <span id="endTimeLabel">{{ twopass.to_seconds|string + " seconds" if twopass.to_seconds else twopass.duration|string + " seconds" }}</span>
-                </div>
-            </div>
-            <div class="row">
-                <div class="col">
-                    <button type="button" class="btn btn-outline-primary" onclick="selectVideoPart()"><span class="bi-play"></span> Preview Selection</button>
+            <input type="hidden" name="startTime" id="startTime" value="{{ twopass.from_seconds if twopass.from_seconds is not none else 0 }}">
+            <input type="hidden" name="endTime" id="endTime" value="{{ twopass.to_seconds if twopass.to_seconds is not none else twopass.duration }}">
+            <input type="hidden" name="speedPoints" id="speedPoints" value='{{ twopass.speed_points | tojson }}'>
+            <div id="timelineWrap" class="mb-2">
+                <div id="selectionTimeline" aria-label="Clip selection timeline"></div>
+                <div id="speedMarkers"></div>
+                <div id="playheadTrack"><div id="playheadMarker" title="Current video position"></div></div>
+                <div id="speedEditor" class="card shadow" hidden>
+                    <div class="card-body p-3">
+                        <label for="speedPointTime" class="form-label mb-1">Source time</label>
+                        <input id="speedPointTime" class="form-control form-control-sm mb-2" type="number" min="0" max="{{ twopass.duration }}" step="0.001">
+                        <label for="speedPointRate" class="form-label mb-1">Speed</label>
+                        <div class="input-group input-group-sm mb-3">
+                            <input id="speedPointRate" class="form-control" type="number" min="0.25" max="4" step="0.01">
+                            <span class="input-group-text">×</span>
+                        </div>
+                        <button type="button" class="btn btn-primary btn-sm" onclick="saveSpeedPoint()">Apply</button>
+                        <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteSpeedPoint()">Delete</button>
+                        <button type="button" class="btn btn-link btn-sm" onclick="closeSpeedEditor()">Close</button>
+                    </div>
                 </div>
             </div>
+            <div class="d-flex flex-wrap gap-3 align-items-center mb-3">
+                <span><strong>Start:</strong> <span id="startTimeLabel"></span></span>
+                <span><strong>End:</strong> <span id="endTimeLabel"></span></span>
+                <span><strong>Source:</strong> <span id="sourceDurationLabel"></span></span>
+                <span><strong>Estimated output:</strong> <span id="outputDurationLabel"></span></span>
+            </div>
+            <div class="timeline-controls d-flex flex-wrap gap-2 align-items-center">
+                <button type="button" class="btn btn-outline-primary btn-sm" onclick="setTime('start')"><span class="bi-skip-start-fill"></span> Set Start</button>
+                <button type="button" class="btn btn-outline-primary btn-sm" onclick="setTime('end')">Set End <span class="bi-skip-end-fill"></span></button>
+                <button type="button" class="btn btn-outline-warning btn-sm" onclick="addSpeedPointAtPlayhead()"><span class="bi-speedometer2"></span> Add Speed Point</button>
+                <button type="button" class="btn btn-outline-primary btn-sm" onclick="selectVideoPart()"><span class="bi-play"></span> Play Selection</button>
+            </div>
+            <small class="text-muted">Speed points override the player's speed while playing the selection.</small>
             <hr />
             <h3>Output Parameters</h3>
             <div class="row mb-3 row-cols-5">
@@ -268,18 +298,211 @@
         </form>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/nouislider@15.8.1/dist/nouislider.min.js"></script>
     <script>
         const MAX_FILESIZE_MB = parseFloat("{{ twopass.probe['format']['size'] }}") * 0.00000095367432;
-        console.log("MAX_FILESIZE_MB:", MAX_FILESIZE_MB);
+        const SOURCE_DURATION = Number("{{ twopass.duration }}");
         const video = document.getElementById('myVideo');
         const startTimeInput = document.getElementById('startTime');
         const endTimeInput = document.getElementById('endTime');
+        const speedPointsInput = document.getElementById('speedPoints');
         const startTimeLabel = document.getElementById('startTimeLabel');
         const endTimeLabel = document.getElementById('endTimeLabel');
+        const sourceDurationLabel = document.getElementById('sourceDurationLabel');
+        const outputDurationLabel = document.getElementById('outputDurationLabel');
+        const timeline = document.getElementById('selectionTimeline');
+        const speedMarkers = document.getElementById('speedMarkers');
+        const playheadMarker = document.getElementById('playheadMarker');
+        const speedEditor = document.getElementById('speedEditor');
+        const speedPointTime = document.getElementById('speedPointTime');
+        const speedPointRate = document.getElementById('speedPointRate');
+        let speedPoints = {{ twopass.speed_points | tojson }};
+        let selectedPoint = null;
+        let savedUserRate = 1;
+        let expectedPreviewRate = 1;
+        let previewEffectsActive = false;
+        let selectionPlayback = false;
+        let previousPlaybackTime = 0;
+        let animationFrame = null;
+
+        const timeFormat = {
+            to(value) { return `${Number(value).toFixed(3)}s`; },
+            from(value) { return Number(String(value).replace('s', '')); },
+        };
+        noUiSlider.create(timeline, {
+            start: [Number(startTimeInput.value), Number(endTimeInput.value)],
+            connect: true,
+            step: 0.001,
+            range: { min: 0, max: SOURCE_DURATION },
+            tooltips: [timeFormat, timeFormat],
+            behaviour: 'tap-drag',
+        });
+
+        function formatSeconds(value) {
+            return `${Number(value).toFixed(3).replace(/\.?0+$/, '')} seconds`;
+        }
+
+        function roundTime(value) {
+            return Math.round(Number(value) * 1000) / 1000;
+        }
+
+        timeline.noUiSlider.on('update', (values) => {
+            startTimeInput.value = roundTime(values[0]);
+            endTimeInput.value = roundTime(values[1]);
+            updateDurationLabels();
+        });
+
+        function seekVideoFromTimeline(values, handle) {
+            video.currentTime = Number(values[handle]);
+            updatePlayhead();
+            applyPreviewSpeed();
+        }
+        timeline.noUiSlider.on('slide', seekVideoFromTimeline);
+        timeline.noUiSlider.on('set', seekVideoFromTimeline);
+
+        function updatePlayhead() {
+            const position = Math.max(0, Math.min(SOURCE_DURATION, Number(video.currentTime) || 0));
+            playheadMarker.style.left = `${position / SOURCE_DURATION * 100}%`;
+            playheadMarker.title = `Current video position: ${formatSeconds(position)}`;
+        }
+
+        function speedAt(time) {
+            let speed = 1;
+            for (const point of speedPoints) {
+                if (point.time <= time) speed = point.speed;
+                else break;
+            }
+            return speed;
+        }
+
+        function estimatedOutputDuration() {
+            const start = Number(startTimeInput.value);
+            const end = Number(endTimeInput.value);
+            let cursor = start;
+            let speed = speedAt(start);
+            let output = 0;
+            for (const point of speedPoints) {
+                if (point.time <= start) continue;
+                if (point.time >= end) break;
+                output += (point.time - cursor) / speed;
+                cursor = point.time;
+                speed = point.speed;
+            }
+            return output + (end - cursor) / speed;
+        }
+
+        function updateDurationLabels() {
+            const start = Number(startTimeInput.value);
+            const end = Number(endTimeInput.value);
+            startTimeLabel.textContent = formatSeconds(start);
+            endTimeLabel.textContent = formatSeconds(end);
+            sourceDurationLabel.textContent = formatSeconds(end - start);
+            outputDurationLabel.textContent = formatSeconds(estimatedOutputDuration());
+        }
+
+        function syncSpeedPoints() {
+            speedPoints.sort((a, b) => a.time - b.time);
+            speedPointsInput.value = JSON.stringify(speedPoints);
+            updateDurationLabels();
+        }
+
+        function renderSpeedMarkers() {
+            speedMarkers.replaceChildren();
+            speedPoints.forEach((point) => {
+                const marker = document.createElement('button');
+                marker.type = 'button';
+                marker.className = `speed-marker${point === selectedPoint ? ' active' : ''}`;
+                marker.style.left = `${point.time / SOURCE_DURATION * 100}%`;
+                marker.textContent = `${point.speed}×`;
+                marker.title = `${formatSeconds(point.time)} at ${point.speed}×`;
+                let dragged = false;
+                let startX = 0;
+                marker.addEventListener('pointerdown', (event) => {
+                    startX = event.clientX;
+                    marker.setPointerCapture(event.pointerId);
+                });
+                marker.addEventListener('pointermove', (event) => {
+                    if (!marker.hasPointerCapture(event.pointerId)) return;
+                    dragged ||= Math.abs(event.clientX - startX) > 3;
+                    if (!dragged) return;
+                    const rect = speedMarkers.getBoundingClientRect();
+                    point.time = roundTime(Math.max(0, Math.min(SOURCE_DURATION, (event.clientX - rect.left) / rect.width * SOURCE_DURATION)));
+                    video.currentTime = point.time;
+                    updatePlayhead();
+                    marker.style.left = `${point.time / SOURCE_DURATION * 100}%`;
+                    marker.title = `${formatSeconds(point.time)} at ${point.speed}×`;
+                    syncSpeedPoints();
+                    applyPreviewSpeed();
+                });
+                marker.addEventListener('pointerup', () => {
+                    syncSpeedPoints();
+                    renderSpeedMarkers();
+                    if (!dragged) openSpeedEditor(point);
+                });
+                speedMarkers.appendChild(marker);
+            });
+        }
+
+        function openSpeedEditor(point) {
+            selectedPoint = point;
+            video.currentTime = point.time;
+            updatePlayhead();
+            applyPreviewSpeed();
+            speedPointTime.value = point.time;
+            speedPointRate.value = point.speed;
+            speedEditor.style.left = `${point.time / SOURCE_DURATION * 100}%`;
+            speedEditor.hidden = false;
+            renderSpeedMarkers();
+            speedPointRate.focus();
+        }
+
+        function closeSpeedEditor() {
+            selectedPoint = null;
+            speedEditor.hidden = true;
+            renderSpeedMarkers();
+        }
+
+        function addSpeedPointAtPlayhead() {
+            const time = roundTime(video.currentTime);
+            const existing = speedPoints.find((point) => point.time === time);
+            if (existing) return openSpeedEditor(existing);
+            const point = { time, speed: 0.5 };
+            speedPoints.push(point);
+            syncSpeedPoints();
+            renderSpeedMarkers();
+            openSpeedEditor(point);
+        }
+
+        function saveSpeedPoint() {
+            if (!selectedPoint) return;
+            const time = roundTime(speedPointTime.value);
+            const speed = Number(speedPointRate.value);
+            if (time < 0 || time > SOURCE_DURATION || speed < 0.25 || speed > 4) {
+                alert('Time must be inside the video and speed must be between 0.25× and 4×.');
+                return;
+            }
+            if (speedPoints.some((point) => point !== selectedPoint && point.time === time)) {
+                alert('A speed point already exists at that time.');
+                return;
+            }
+            selectedPoint.time = time;
+            selectedPoint.speed = speed;
+            syncSpeedPoints();
+            closeSpeedEditor();
+            applyPreviewSpeed();
+        }
+
+        function deleteSpeedPoint() {
+            if (!selectedPoint) return;
+            speedPoints = speedPoints.filter((point) => point !== selectedPoint);
+            syncSpeedPoints();
+            closeSpeedEditor();
+            applyPreviewSpeed();
+        }
 
         // Open the player at the start time. The metadata may already be loaded before this script runs.
         function seekToStart() {
-            video.currentTime = startTimeInput.value;
+            video.currentTime = Number(startTimeInput.value);
         }
         if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
             seekToStart();
@@ -287,53 +510,79 @@
             video.addEventListener('loadedmetadata', seekToStart);
         }
 
-        startTimeInput.addEventListener('input', updateStartTimeLabel);
-        endTimeInput.addEventListener('input', updateEndTimeLabel);
-        updateStartTimeLabel();
-        updateEndTimeLabel();
-
-        // Number() drops trailing zeros, so a slider value of "20.0" shows as "20 seconds"
-        function formatSeconds(value) {
-            return Number(value) + ' seconds';
-        }
-
-        function updateStartTimeLabel() {
-            startTimeLabel.textContent = formatSeconds(startTimeInput.value);
-        }
-
-        function updateEndTimeLabel() {
-            endTimeLabel.textContent = formatSeconds(endTimeInput.value);
-        }
-
         function setTime(type) {
-            // Keep milliseconds, which is what the slider's 0.001 step can hold
-            const currentTime = Math.round(video.currentTime * 1000) / 1000;
+            const currentTime = roundTime(video.currentTime);
+            timeline.noUiSlider.set(type === 'start' ? [currentTime, null] : [null, currentTime]);
+        }
 
-            if (type === 'start') {
-                startTimeInput.value = currentTime;
-                startTimeLabel.textContent = formatSeconds(currentTime);
-            } else if (type === 'end') {
-                endTimeInput.value = currentTime;
-                endTimeLabel.textContent = formatSeconds(currentTime);
+        function enablePreviewEffects() {
+            if (previewEffectsActive) return;
+            savedUserRate = video.playbackRate;
+            previewEffectsActive = true;
+            applyPreviewSpeed();
+        }
+
+        function disablePreviewEffects() {
+            if (!previewEffectsActive) return;
+            previewEffectsActive = false;
+            video.playbackRate = savedUserRate;
+        }
+
+        function applyPreviewSpeed() {
+            if (!previewEffectsActive) return;
+            expectedPreviewRate = speedAt(video.currentTime);
+            if (Math.abs(video.playbackRate - expectedPreviewRate) > 0.0001) {
+                video.playbackRate = expectedPreviewRate;
             }
+        }
+
+        function previewLoop() {
+            applyPreviewSpeed();
+            updatePlayhead();
+            const end = Number(endTimeInput.value);
+            if (selectionPlayback && !video.seeking && previousPlaybackTime <= end && video.currentTime >= end) {
+                video.pause();
+                video.currentTime = end;
+                selectionPlayback = false;
+                disablePreviewEffects();
+            }
+            previousPlaybackTime = video.currentTime;
+            animationFrame = video.paused ? null : requestAnimationFrame(previewLoop);
         }
 
         function selectVideoPart() {
-            const startTime = parseFloat(startTimeInput.value);
-            const endTime = parseFloat(endTimeInput.value);
-
-            if (!isNaN(startTime) && !isNaN(endTime) && startTime < endTime) {
-                video.currentTime = startTime;
-                video.play();
-
-                setTimeout(() => {
-                    video.pause();
-                    video.currentTime = endTime;
-                }, (endTime - startTime) * 1000);
-            } else {
-                alert('Please enter valid start and end times.');
-            }
+            const start = Number(startTimeInput.value);
+            const end = Number(endTimeInput.value);
+            if (!(start < end)) return alert('Please select a valid start and end time.');
+            enablePreviewEffects();
+            selectionPlayback = true;
+            previousPlaybackTime = start;
+            video.currentTime = start;
+            video.play();
         }
+
+        video.addEventListener('ratechange', applyPreviewSpeed);
+        video.addEventListener('timeupdate', updatePlayhead);
+        video.addEventListener('seeking', () => {
+            updatePlayhead();
+            applyPreviewSpeed();
+        });
+        video.addEventListener('seeked', () => {
+            previousPlaybackTime = video.currentTime;
+            updatePlayhead();
+            applyPreviewSpeed();
+        });
+        video.addEventListener('play', () => {
+            if (!animationFrame) animationFrame = requestAnimationFrame(previewLoop);
+        });
+        video.addEventListener('pause', () => {
+            if (animationFrame) cancelAnimationFrame(animationFrame);
+            animationFrame = null;
+        });
+
+        syncSpeedPoints();
+        renderSpeedMarkers();
+        updatePlayhead();
 
         function startSpin() {
             // Get the icon element

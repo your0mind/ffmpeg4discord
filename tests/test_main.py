@@ -184,6 +184,7 @@ def encode_form(**overrides):
     form = {
         "startTime": "10",
         "endTime": "40",
+        "speedPoints": "[]",
         "target_filesize": "8",
         "resolution": "",
         "crop": "",
@@ -238,6 +239,17 @@ def test_encode_keeps_milliseconds(web):
     assert tp.times == {"ss": "00:00:10.250", "to": "00:00:40.500"}
     assert tp.length == pytest.approx(30.25)
     assert (tp.from_seconds, tp.to_seconds) == (10.25, 40.5)
+
+
+def test_encode_applies_speed_points_and_output_duration(web):
+    web.client.post(
+        "/encode",
+        data=encode_form(speedPoints='[{"time": 20, "speed": 0.5}, {"time": 30, "speed": 1}]'),
+    )
+    tp = web.twopass_loop.call_args.kwargs["twopass"]
+    assert tp.speed_points == [{"time": 20.0, "speed": 0.5}, {"time": 30.0, "speed": 1.0}]
+    assert tp.source_length == 30
+    assert tp.length == 40
 
 
 def test_encode_unchecked_audio_means_no_audio(web):

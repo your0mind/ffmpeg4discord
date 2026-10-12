@@ -226,6 +226,54 @@ def test_create_bitrate_dict_ignores_audio_when_no_audio(make_twopass):
     assert tp.bitrate_dict["b:v"] == 91000
 
 
+# --- variable speed ---
+
+
+def test_speed_points_recalculate_output_duration(make_twopass):
+    tp = make_twopass(
+        times={"from": "10", "to": "40"},
+        speed_points=[{"time": 20, "speed": 0.5}, {"time": 30, "speed": 2}],
+    )
+    assert tp.source_length == 30
+    assert tp._speed_segments() == [(0, 10.0, 1.0), (10.0, 20.0, 0.5), (20.0, 30.0, 2.0)]
+    assert tp.length == 35
+
+
+@pytest.mark.parametrize(
+    "points, message",
+    [
+        ([{"time": 10, "speed": 0.1}], "between 0.25x and 4x"),
+        ([{"time": 121, "speed": 1}], "time must be between"),
+        ([{"time": 10, "speed": 1}, {"time": 10, "speed": 2}], "Only one speed point"),
+    ],
+)
+def test_speed_points_are_validated(make_twopass, points, message):
+    with pytest.raises(ValueError, match=message):
+        make_twopass(speed_points=points)
+
+
+def test_speed_filter_graph_keeps_first_pass_video_only(make_twopass):
+    tp = make_twopass(
+        times={"from": "5", "to": "25"},
+        speed_points=[{"time": 10, "speed": 0.5}, {"time": 15, "speed": 1}],
+    )
+    tp.run(dry_run=True)
+    first, second = tp.commands
+    assert "split=3" in first
+    assert "setpts=(PTS-STARTPTS)/0.5" in first
+    assert "atempo" not in first
+    assert "asplit=3" in second
+    assert "atempo=0.5" in second
+    assert "concat=a=0:n=3:v=1" in second
+    assert "concat=a=1:n=3:v=0" in second
+
+
+def test_quarter_speed_audio_uses_two_atempo_stages(make_twopass):
+    tp = make_twopass(speed_points=[{"time": 0, "speed": 0.25}])
+    tp.run(dry_run=True)
+    assert tp.commands[1].count("atempo=0.5") == 2
+
+
 # --- ffmpeg parameters ---
 
 

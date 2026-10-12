@@ -14,6 +14,7 @@ Functions:
 - main: The main function that parses command-line arguments and starts the encoding process or web server.
 """
 
+import json
 import logging
 import threading
 import time
@@ -192,6 +193,13 @@ def main() -> None:
                 "ss": seconds_to_timestamp(ss),
                 "to": seconds_to_timestamp(to),
             }
+            try:
+                speed_points = json.loads(request.form.get("speedPoints", "[]"))
+            except json.JSONDecodeError as exc:
+                raise ValueError("Speed points must be valid JSON.") from exc
+            if not isinstance(speed_points, list):
+                raise ValueError("Speed points must be a list.")
+            twopass.set_speed_points(speed_points)
             target_filesize = float(request.form.get("target_filesize"))
 
             # update TwoPass from web form

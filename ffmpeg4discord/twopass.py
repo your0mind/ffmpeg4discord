@@ -64,6 +64,9 @@ WINDOWS_SAFE_CHARS = set(string.ascii_letters + string.digits + "-_./\\:=+")
 # ffprobe `color_transfer` values that mean the video is HDR: PQ (HDR10, Dolby Vision) and HLG.
 HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
 
+MIN_SPEED = 0.25
+MAX_SPEED = 4.0
+
 
 def available_codecs() -> list[str]:
     """Return the codecs from `CODEC_ENCODERS` that this operating system can use.
@@ -261,6 +264,7 @@ class TwoPass:
         amix_normalize: bool = False,
         astreams: Optional[list[int]] = None,
         no_audio: bool = False,
+        speed_points: Optional[list[dict]] = None,
     ) -> None:
         self.target_filesize = target_filesize
         self.crop = crop
@@ -280,6 +284,7 @@ class TwoPass:
         self.message = ""
         self.commands = []
         self.no_audio = no_audio
+        self.speed_points = []
 
         self.filename = filename
         self.fname = filename.name
@@ -303,6 +308,69 @@ class TwoPass:
         self.probe = ffmpeg.probe(filename=filename, show_program_version=None)
         self._process_probe()
         self._process_times(filename_times)
+        # Older code paths only populated ``times`` and ``length`` for an untrimmed clip.
+        self.from_seconds = (
+            self.from_seconds if self.from_seconds is not None else seconds_from_ts_string(self.times["ss"])
+        )
+        self.to_seconds = self.to_seconds if self.to_seconds is not None else seconds_from_ts_string(self.times["to"])
+        self.source_length = self.length
+        self.set_speed_points(speed_points or [])
+
+    def set_speed_points(self, points: list[dict]) -> None:
+        """Validate speed changes and recalculate the encoded clip duration.
+
+        Point times are absolute positions on the source timeline. A point changes playback speed from
+        its position until the next point; before the first point the speed is 1x.
+        """
+
+        normalized = []
+        for point in points:
+            try:
+                time = round(float(point["time"]), 3)
+                speed = round(float(point["speed"]), 3)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("Each speed point needs numeric 'time' and 'speed' values.") from exc
+
+            if not 0 <= time <= self.duration:
+                raise ValueError(f"Speed point time must be between 0 and {self.duration:g} seconds.")
+            if not MIN_SPEED <= speed <= MAX_SPEED:
+                raise ValueError(f"Speed must be between {MIN_SPEED:g}x and {MAX_SPEED:g}x.")
+
+            normalized.append({"time": time, "speed": speed})
+
+        normalized.sort(key=lambda point: point["time"])
+        for previous, current in zip(normalized, normalized[1:], strict=False):
+            if previous["time"] == current["time"]:
+                raise ValueError("Only one speed point can exist at a given time.")
+
+        self.speed_points = normalized
+        self.source_length = self.to_seconds - self.from_seconds
+        self.length = sum((end - start) / speed for start, end, speed in self._speed_segments())
+
+    def _speed_segments(self) -> list[tuple[float, float, float]]:
+        """Return source-time segments inside the selection as ``(start, end, speed)`` tuples."""
+
+        selection_start = self.from_seconds
+        selection_end = self.to_seconds
+        active_speed = 1.0
+        boundaries = []
+
+        for point in self.speed_points:
+            if point["time"] <= selection_start:
+                active_speed = point["speed"]
+            elif point["time"] < selection_end:
+                boundaries.append(point)
+            else:
+                break
+
+        segments = []
+        cursor = selection_start
+        for point in boundaries:
+            segments.append((cursor - selection_start, point["time"] - selection_start, active_speed))
+            cursor = point["time"]
+            active_speed = point["speed"]
+        segments.append((cursor - selection_start, selection_end - selection_start, active_speed))
+        return segments
 
     def _parse_streams(self):
         """Helper to parse video and audio streams from the probe output.
@@ -627,6 +695,59 @@ class TwoPass:
             inputs=len(selected_positions),
         )
 
+    @staticmethod
+    def _apply_atempo(audio, speed: float):
+        """Apply an audio tempo using stages kept in FFmpeg's high-quality 0.5x..2x range."""
+
+        remaining = speed
+        while remaining < 0.5:
+            audio = audio.filter("atempo", 0.5)
+            remaining /= 0.5
+        while remaining > 2:
+            audio = audio.filter("atempo", 2)
+            remaining /= 2
+        if not math.isclose(remaining, 1.0):
+            audio = audio.filter("atempo", remaining)
+        return audio
+
+    def _apply_speed_filters(self, video, audio):
+        """Apply piecewise speed changes and concatenate the resulting A/V segments."""
+
+        segments = self._speed_segments()
+        if len(segments) == 1 and math.isclose(segments[0][2], 1.0):
+            return video, audio
+
+        # Input seeking selects the clip, while these normalized timestamps give trim/atrim a stable 0-based axis.
+        video = video.filter("setpts", "PTS-STARTPTS")
+        if audio is not None:
+            audio = audio.filter("asetpts", "PTS-STARTPTS")
+
+        if len(segments) > 1:
+            video_sources = video.filter_multi_output("split", len(segments))
+            audio_sources = audio.filter_multi_output("asplit", len(segments)) if audio is not None else None
+        else:
+            video_sources = [video]
+            audio_sources = [audio] if audio is not None else None
+
+        video_segments = []
+        audio_segments = []
+        for index, (start, end, speed) in enumerate(segments):
+            segment_video = video_sources[index].filter("trim", start=start, end=end)
+            segment_video = segment_video.filter("setpts", f"(PTS-STARTPTS)/{speed:g}")
+            video_segments.append(segment_video)
+
+            if audio_sources is not None:
+                segment_audio = audio_sources[index].filter("atrim", start=start, end=end)
+                segment_audio = segment_audio.filter("asetpts", "PTS-STARTPTS")
+                audio_segments.append(self._apply_atempo(segment_audio, speed))
+
+        joined_video = video_segments[0] if len(video_segments) == 1 else ffmpeg.concat(*video_segments, v=1, a=0)
+        if not audio_segments:
+            return joined_video, None
+
+        joined_audio = audio_segments[0] if len(audio_segments) == 1 else ffmpeg.concat(*audio_segments, v=0, a=1)
+        return joined_video, joined_audio
+
     def run(self, dry_run: bool = False) -> float:
         """
         Perform the CPU-intensive encoding job
@@ -676,6 +797,7 @@ class TwoPass:
         ffinput = ffmpeg.input(self.filename, **self.times)
         video = self._apply_video_filters(ffinput.video)
         audio = self._apply_audio_filters(ffinput)
+        video, audio = self._apply_speed_filters(video, audio)
 
         # Set our logging level. We use "error" rather than "quiet" so that ffmpeg's own failure
         # messages reach the user; "-stats" still prints the progress line either way.
